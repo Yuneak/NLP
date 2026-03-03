@@ -1,0 +1,160 @@
+RLCER detailed algorithm walkthrough with a complete worked example
+==================================================================
+
+Paper context
+-------------
+RLCER = Reinforcing Chain-of-Thought (CoT) Reasoning with Self-Evolving Rubrics.
+Main idea: combine outcome reward (final answer correctness) with process reward
+from valid rubrics that correlate with correctness.
+
+
+High-level algorithm (detailed)
+-------------------------------
+For each question in a training batch:
+
+1) Sample multiple reasoner rollouts
+   - Generate N CoT + answer rollouts.
+   - Compute outcome label for each rollout.
+     Example encoding:
+     - z_i = +1 if final answer is correct
+     - z_i = -1 if final answer is incorrect
+     - y_i = 1[z_i = +1] for correlation checks
+
+2) Generate rubric candidates (rubricator role)
+   - Rubricator proposes rubric list R = {(c_k, s_k)}
+   - c_k = natural-language criterion
+   - s_k = rubric score weight
+
+3) Verify rubric satisfaction for each rollout
+   - Verifier returns v_i(c_k) in {0,1}
+     - 1 means rollout i satisfies rubric k
+     - 0 means it does not
+
+4) Filter valid rubrics (correlation + non-saturation)
+   - Compute corr(v(c_k), y) across rollouts for each rubric.
+   - Validity rule:
+       valid(c_k) = [corr(v(c_k), y) > alpha] AND [std(v(c_k)) > 0]
+   - alpha is a threshold (example: alpha = 0.2)
+   - std > 0 means rubric is not trivial (not always 0 or always 1)
+
+5) Compute CoT reward and final reasoner reward
+   - Raw CoT reward for rollout i:
+       r_cot(i) = sum_k s_k * v_i(c_k) * 1[valid(c_k)]
+   - Normalize CoT reward per question:
+       r_cot_norm(i) = (r_cot(i) - min_j r_cot(j)) / (max_j r_cot(j) - min_j r_cot(j))
+     If max == min, set r_cot_norm(i) = 0.
+   - Final reasoner reward:
+       r_reasoner(i) = r_outcome(i) + r_cot_norm(i)
+     where r_outcome(i) = z_i
+
+6) Compute rubricator reward and update both roles
+   - Example rubricator signal:
+       r_rubricator = fraction_valid + format_reward
+       fraction_valid = (# valid rubrics proposed) / (total proposed rubrics)
+       format_reward = 1 if rubric output format is parseable else 0
+   - Use policy-gradient style updates:
+       - maximize expected r_reasoner for reasoner behavior
+       - maximize expected r_rubricator for rubricator behavior
+
+
+Complete numeric example (single question)
+-----------------------------------------
+Question q:
+"Compute 47 + 58"
+Ground-truth answer: 105
+
+Number of rollouts: N = 6
+alpha = 0.2
+
+Step 1: sampled rollouts and outcome labels
+-------------------------------------------
+We only need correctness labels for reward/filtering:
+
+rollout i:        1  2  3  4  5  6
+y_i (correct?):   1  1  0  1  0  0
+z_i (+1/-1):     +1 +1 -1 +1 -1 -1
+
+Step 2: rubric candidates from rubricator
+-----------------------------------------
+R1: c_1 = "Handles carry correctly in addition",        s_1 = +0.8
+R2: c_2 = "Performs a final equation check",            s_2 = +0.4
+R3: c_3 = "Includes an irrelevant tangent",             s_3 = -0.6
+R4: c_4 = "Always includes a fixed filler phrase",      s_4 = +0.2
+
+Step 3: verifier satisfaction matrix v_i(c_k)
+----------------------------------------------
+Each row is a rubric; each column is a rollout.
+
+R1 satisfaction v(c_1): [1, 1, 0, 1, 0, 0]
+R2 satisfaction v(c_2): [1, 0, 0, 1, 0, 0]
+R3 satisfaction v(c_3): [0, 1, 1, 0, 1, 1]
+R4 satisfaction v(c_4): [1, 1, 1, 1, 1, 1]
+
+Step 4: validity filtering
+--------------------------
+Compute corr(v(c_k), y) and check non-saturation:
+
+R1: corr = +1.000000, std > 0  -> valid (corr > 0.2 and non-trivial)
+R2: corr = +0.707107, std > 0  -> valid
+R3: corr = -0.707107, std > 0  -> invalid (negative correlation)
+R4: corr = +0.000000, std = 0  -> invalid (saturated)
+
+Valid rubric set = {R1, R2}
+
+Step 5: CoT reward and final reasoner reward
+---------------------------------------------
+Raw CoT reward per rollout:
+r_cot(i) = 0.8 * v_i(c_1) + 0.4 * v_i(c_2)
+
+rollout i          1      2      3      4      5      6
+v_i(c_1)           1      1      0      1      0      0
+v_i(c_2)           1      0      0      1      0      0
+r_cot(i)          1.2    0.8    0.0    1.2    0.0    0.0
+
+Normalization:
+min r_cot = 0.0
+max r_cot = 1.2
+r_cot_norm(i) = r_cot(i) / 1.2
+
+rollout i             1       2       3      4       5      6
+r_cot_norm(i)       1.000   0.667   0.000  1.000   0.000  0.000
+r_outcome(i)=z_i    1.000   1.000  -1.000  1.000  -1.000 -1.000
+r_reasoner(i)       2.000   1.667  -1.000  2.000  -1.000 -1.000
+
+Interpretation:
+- Correct rollouts with good process get highest rewards (rollouts 1 and 4).
+- Incorrect rollouts remain penalized even if some process signal exists.
+
+Step 6: rubricator reward
+-------------------------
+Suppose rubricator proposed 4 rubrics total (R1..R4), of which 2 are valid.
+
+fraction_valid = 2 / 4 = 0.5
+format_reward  = 1.0  (parseable output format)
+r_rubricator   = 0.5 + 1.0 = 1.5
+
+Interpretation:
+- Rubricator is rewarded for producing criteria that are actually predictive.
+- Over time this pushes rubric proposals toward higher validity.
+
+Step 7: objective update sketch
+-------------------------------
+Reasoner update signal (example baseline = mean reasoner reward):
+mean r_reasoner = (2 + 1.667 - 1 + 2 - 1 - 1) / 6 = 0.4444
+
+Advantage-like values A_i = r_reasoner(i) - mean:
+A = [1.5556, 1.2222, -1.4444, 1.5556, -1.4444, -1.4444]
+
+Policy update intuition:
+- Increase probability of trajectories with positive A_i.
+- Decrease probability of trajectories with negative A_i.
+- In parallel, optimize rubricator toward higher fraction_valid and valid format.
+
+
+Why this is better than outcome-only RLVR in this example
+---------------------------------------------------------
+- Outcome-only RLVR cannot distinguish rollout 1 vs rollout 2 if both are correct.
+- RLCER adds process discrimination through valid rubrics:
+  rollout 1 gets higher reward than rollout 2 because reasoning quality is higher.
+- This creates a denser and more informative training signal.
+

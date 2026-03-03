@@ -1,0 +1,130 @@
+Logical IR / LBN detailed algorithm walkthrough with complete worked examples
+=============================================================================
+
+Paper context
+-------------
+Logical IR uses a Logical Bayesian Network (LBN) to do inspectable inference
+from language-derived logical forms.
+Main idea: combine grammar-compiled logic with factor-graph belief propagation,
+including an explicit NEG factor for probabilistic negation handling.
+
+
+High-level algorithm (detailed)
+-------------------------------
+For each query q with knowledge base KB and evidence E:
+
+1) Disambiguate language input
+   - Resolve local ambiguities (for example PP attachment, senses).
+   - Keep this local and controlled.
+
+2) Compile to typed logical form
+   - Use deterministic grammar-first compilation.
+   - Output typed propositions/rules.
+
+3) Build query-relevant factor graph
+   - Add AND factors for conjunctive premises.
+   - Add OR factors with noisy-OR semantics for multi-rule support.
+   - Add NEG factors so each proposition p is tied to not p:
+       P(p) + P(not p) = 1
+
+4) Clamp evidence and initialize beliefs
+   - Set observed facts in E.
+   - Initialize unknowns (often 0.5 in toy settings).
+
+5) Run iterative message passing
+   - Forward (pi) messages for causal support.
+   - Backward (lambda) messages for evidential constraints.
+   - Apply damping:
+       belief_new = damp * belief_old + (1 - damp) * belief_msg
+
+6) Read posterior for target query
+   - Return P(q), P(not q), and derivation trace.
+
+
+Complete numeric example A (forward logical-probabilistic inference)
+--------------------------------------------------------------------
+Rules:
+- r1: A -> B, weight = 0.9
+- r2: B -> C, weight = 0.8
+- r3: A AND B -> D, weight = 0.7
+
+Evidence:
+- P(A=1) = 1.0
+
+Step 1: AND activations
+-----------------------
+- act(r1) = P(A) = 1.0
+- act(r2) = P(B) (updated after r1)
+- act(r3) = P(A) * P(B)
+
+Step 2: weighted rule messages
+------------------------------
+Message formula: m = activation * rule_weight
+
+After first stable pass:
+- m(r1->B) = 1.0 * 0.9 = 0.9
+- m(r2->C) = 0.9 * 0.8 = 0.72
+- m(r3->D) = (1.0 * 0.9) * 0.7 = 0.63
+
+Step 3: OR/noisy-OR aggregation
+-------------------------------
+If one incoming message, noisy-OR returns that message directly.
+
+Posteriors:
+- P(B) = 0.900
+- P(C) = 0.720
+- P(D) = 0.630
+- P(A) = 1.000 (clamped evidence)
+
+Interpretation:
+- Every value can be traced to explicit rules and weights.
+
+
+Complete numeric example B (NEG factor for contrapositive update)
+-----------------------------------------------------------------
+Goal: show why explicit negation linkage matters.
+
+Given:
+- Prior P(A) = 0.50
+- Strong rule A -> B represented by:
+  - P(B|A) = 0.95
+  - P(B|not A) = 0.10
+- Observe evidence not B
+
+Without NEG/backward update:
+- P(A | not B) stays 0.50 (no contrapositive propagation)
+
+With NEG + backward message:
+- P(not B | A) = 1 - 0.95 = 0.05
+- P(not B | not A) = 1 - 0.10 = 0.90
+
+Bayes update:
+- numerator   = P(not B|A) * P(A) = 0.05 * 0.50 = 0.025
+- denominator = 0.025 + (0.90 * 0.50) = 0.475
+- P(A|not B)  = 0.025 / 0.475 = 0.0526
+- P(not A|not B) = 0.9474
+
+Interpretation:
+- Evidence not B strongly lowers belief in A.
+- This is the probabilistic modus tollens behavior enabled by NEG factors.
+
+
+Grammar-first parse mini-example (disambiguate then compile)
+-------------------------------------------------------------
+Sentence:
+"I saw the man with a telescope"
+
+Disambiguation outcomes:
+- instrument reading -> see(i, man) & using(i, telescope)
+- noun reading       -> see(i, man_with_telescope)
+
+Interpretation:
+- LLM resolves local ambiguity.
+- Deterministic compiler preserves a checkable final structure.
+
+
+Why this is better than free-form reasoning in this example
+-----------------------------------------------------------
+- Inference is explicit and auditable at rule/message level.
+- Negation is modeled structurally, not guessed from fluent text.
+- The system can return calibrated uncertainty, not only hard yes/no text.

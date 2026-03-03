@@ -1,0 +1,125 @@
+FormalJudge detailed algorithm walkthrough with complete worked examples
+=======================================================================
+
+Paper context
+-------------
+FormalJudge = neuro-symbolic agentic oversight.
+Main idea: keep neural processing for local fact extraction, then do global
+constraint composition with deterministic formal verification.
+
+
+High-level algorithm (detailed)
+-------------------------------
+For each user intent I and agent trajectory tau:
+
+1) Decompose intent into atomic facts
+   - Build a fact set F = {f_1, ..., f_m}.
+   - Each fact is grounded and minimal (for example: has_flight, total_cost).
+
+2) Extract fact values with a hybrid extractor
+   - Deterministic parse for structured fields (dates, prices, booleans).
+   - Focused LLM extraction only when deterministic parsing is not enough.
+
+3) Synthesize formal constraints
+   - Convert requirements into predicates phi_k(F).
+   - Compose:
+       Phi_safe(F) = and_k phi_k(F)
+
+4) Verify composition deterministically
+   - Run verification (Dafny -> Boogie -> Z3, or deterministic fallback).
+   - Verdict rule:
+       SAFE iff Phi_safe(F) is true
+
+5) Return a failure trace
+   - If unsafe, report which predicates failed.
+   - This gives direct, actionable repair instructions.
+
+6) Optional iterative repair
+   - Apply repairs from failed predicates.
+   - Re-verify until SAFE or round limit.
+
+
+Complete numeric example (trip-booking oversight)
+-------------------------------------------------
+Intent:
+"Book Paris trip. Budget $800. If flying, hotel check-in must match arrival day."
+
+Constraints:
+- phi_budget: total_cost <= budget
+- phi_dates: has_flight => (checkin_day = arrival_day)
+- Phi_safe = phi_budget AND phi_dates
+
+Step 1: extracted atomic facts for two candidate trajectories
+------------------------------------------------------------
+Case A (candidate trajectory A):
+- has_flight = 1
+- arrival_day = 5
+- checkin_day = 5
+- total_cost = 780
+- budget = 800
+
+Case B (candidate trajectory B):
+- has_flight = 1
+- arrival_day = 5
+- checkin_day = 6
+- total_cost = 840
+- budget = 800
+
+Step 2: evaluate each predicate
+-------------------------------
+Case A:
+- phi_budget: 780 <= 800 -> True
+- phi_dates:  1 => (5 = 5) -> True
+
+Case B:
+- phi_budget: 840 <= 800 -> False
+- phi_dates:  1 => (6 = 5) -> False
+
+Step 3: compose final safety formula
+------------------------------------
+Case A:
+- Phi_safe(A) = True AND True = True
+- Verdict = SAFE
+
+Case B:
+- Phi_safe(B) = False AND False = False
+- Verdict = UNSAFE
+
+Step 4: machine-readable failure report (Case B)
+-------------------------------------------------
+- budget violated
+- flight implies same-day hotel checkin violated
+
+
+Iterative refinement example (same constraints)
+-----------------------------------------------
+Start plan:
+- has_flight = 1
+- arrival_day = 3
+- checkin_day = 5
+- total_cost = 930
+- budget = 800
+
+Round 1 verification:
+- UNSAFE
+- issues:
+  - "Reduce cost to be <= budget."
+  - "Set checkin_day equal to arrival_day when flight exists."
+
+Apply repairs:
+- total_cost -> 800
+- checkin_day -> 3
+
+Round 2 verification:
+- SAFE
+
+Interpretation:
+- FormalJudge does not just output "unsafe"; it returns exact failed constraints.
+- Those failed constraints can drive reliable repair loops.
+
+
+Why this is stronger than LLM-as-judge in this example
+-------------------------------------------------------
+- Narrative quality does not affect verdict.
+- The result is fully determined by extracted facts + explicit logic.
+- Nested conditional rules are enforced exactly, not probabilistically guessed.

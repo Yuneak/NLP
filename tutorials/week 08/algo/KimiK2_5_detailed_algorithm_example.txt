@@ -1,0 +1,126 @@
+Kimi K2.5 detailed algorithm walkthrough with complete worked examples
+======================================================================
+
+Paper context
+-------------
+Kimi K2.5 combines multimodal model training and agent orchestration:
+- Joint text-vision optimization through pre-training and RL.
+- Agent Swarm with PARL (Parallel-Agent Reinforcement Learning) for faster,
+  higher-quality agentic execution.
+
+
+High-level algorithm (detailed)
+-------------------------------
+1) Joint text-vision pre-training
+   - Train on mixed text-vision tokens with early fusion.
+   - Keep a moderate vision ratio to avoid text degradation.
+
+2) Zero-vision SFT
+   - Run text-only supervised fine-tuning.
+   - Preserve text ability while keeping multimodal behavior active.
+
+3) Joint multimodal RL
+   - Optimize task rewards (including verifiable or GRM-like signals) across
+     language, reasoning, coding, and vision tasks.
+
+4) Train PARL orchestrator over frozen subagents
+   - Orchestrator decides when/how to spawn specialized subagents in parallel.
+   - Use PARL reward:
+       r_parl = lambda_1 * r_parallel + lambda_2 * r_finish + r_perf
+
+5) Anneal auxiliary lambdas to zero
+   - Start with exploration/completion shaping.
+   - End with pure task performance objective (r_perf only).
+
+6) Optimize latency with critical-path objective
+   - CriticalSteps = sum_t (S_main^t + max_i S_sub,i^t)
+   - This aligns optimization with wall-clock behavior in parallel systems.
+
+
+Complete numeric example A (joint training strategy comparison)
+---------------------------------------------------------------
+Three strategies under fixed token budget:
+
+Early:
+- vision_knowledge=25.8
+- vision_reasoning=43.8
+- ocr=65.7
+- text_knowledge=45.5
+- text_reasoning=58.5
+- code=24.8
+- average = (25.8+43.8+65.7+45.5+58.5+24.8)/6 = 44.02
+
+Mid:
+- average = 42.72
+
+Late:
+- average = 41.60
+
+Interpretation:
+- Early fusion is best in this ablation.
+- Early vs Late deltas are positive across all listed dimensions.
+
+
+Complete numeric example B (PARL reward shaping + annealing)
+-------------------------------------------------------------
+Policies:
+- serial_collapse:      r_parallel=0.00, r_finish=0.95, r_perf=0.58
+- spurious_parallelism: r_parallel=1.00, r_finish=0.20, r_perf=0.42
+- balanced_decomposition: r_parallel=0.75, r_finish=0.88, r_perf=0.79
+
+Initial lambdas (step 0):
+- lambda_1 = 0.45
+- lambda_2 = 0.45
+
+Step 0 scores:
+- serial_collapse
+  = 0.45*0.00 + 0.45*0.95 + 0.58
+  = 1.008
+- spurious_parallelism
+  = 0.45*1.00 + 0.45*0.20 + 0.42
+  = 0.960
+- balanced_decomposition
+  = 0.45*0.75 + 0.45*0.88 + 0.79
+  = 1.524  (best)
+
+As lambdas anneal linearly to 0 (step 6):
+- lambda_1 = 0.00
+- lambda_2 = 0.00
+- final scores become pure r_perf:
+  - balanced_decomposition = 0.790 (best)
+  - serial_collapse = 0.580
+  - spurious_parallelism = 0.420
+
+Interpretation:
+- Early shaping favors useful parallel behaviors.
+- Final objective prevents reward hacking and keeps real task quality primary.
+
+
+Complete numeric example C (critical-steps latency)
+---------------------------------------------------
+Toy episode critical-path comparison:
+- single-agent-style plan critical steps = 46
+- swarm-style plan critical steps = 22
+- speedup from critical path = 46/22 = 2.09x
+
+Quality-target latency curve (single vs swarm):
+- target Item-F1=30%: single=1.80x, swarm=0.60x, speedup=3.00x
+- target Item-F1=40%: single=2.80x, swarm=0.90x, speedup=3.11x
+- target Item-F1=50%: single=4.00x, swarm=1.10x, speedup=3.64x
+- target Item-F1=60%: single=5.60x, swarm=1.30x, speedup=4.31x
+- target Item-F1=70%: single=7.00x, swarm=1.55x, speedup=4.52x
+
+Interpretation:
+- Parallel orchestration keeps latency growth much lower at higher quality
+  targets than sequential execution.
+
+
+Cross-modal transfer snapshot (reported in this setup)
+------------------------------------------------------
+- MMLU-Pro:     84.7 -> 86.4 (+1.7)
+- GPQA-Diamond: 84.3 -> 86.4 (+2.1)
+- LongBench v2: 56.7 -> 58.9 (+2.2)
+
+Why this matters:
+- Visual RL did not hurt text benchmarks in this recipe.
+- It improved them.
